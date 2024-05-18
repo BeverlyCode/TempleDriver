@@ -5,7 +5,7 @@ all:
 	upx --lzma --best release/TempleDriver
 
 test:
-	cc main.c glad_gl.c -I inc -Ofast -lglfw -lasound -pthread -lm -o /tmp/TempleDriver_test
+	tcc main.c glad_gl.c -I inc -Ofast -lglfw -lasound -pthread -lm -o /tmp/TempleDriver_test
 	/tmp/TempleDriver_test
 	rm /tmp/TempleDriver_test
 
