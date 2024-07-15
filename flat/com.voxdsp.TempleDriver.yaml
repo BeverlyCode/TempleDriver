@@ -23,5 +23,5 @@ modules:
       - install -Dm 0644 flat/templedriver.png ${FLATPAK_DEST}/share/icons/hicolor/128x128/apps/templedriver.png
     sources:
       - type: git
-        url: https://github.com/mrbid/TempleDriver.git
-        commit: f300481b04bff205ad5cbe92a1997cba2d3e59ef
+        url: https://github.com/BeverlyCode/TempleDriver.git
+        commit: 000
