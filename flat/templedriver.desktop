@@ -1,7 +1,7 @@
 [Desktop Entry]
 Encoding=UTF-8
 Name=TempleDriver
-Comment=Run over CIA GLOWIES!
+Comment=Terry's 1st Temple
 StartupNotify=false
 Exec=templedriver
 Icon=templedriver
