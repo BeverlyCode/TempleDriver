@@ -1,11 +1,13 @@
+.PHONY: all test clean
+
 all:
 	mkdir -p release
-	cc main.c glad_gl.c -I inc -Ofast -lglfw -lasound -pthread -lm -o release/TempleDriver
+	cc main.c -I inc -Ofast -lSDL2 -lGLESv2 -lEGL -lm -o release/TempleDriver
 	strip --strip-unneeded release/TempleDriver
 	upx --lzma --best release/TempleDriver
 
 test:
-	tcc main.c glad_gl.c -I inc -Ofast -lglfw -lasound -pthread -lm -o /tmp/TempleDriver_test
+	cc main.c -I inc -Ofast -lSDL2 -lGLESv2 -lEGL -lm -o /tmp/TempleDriver_test
 	/tmp/TempleDriver_test
 	rm /tmp/TempleDriver_test
 

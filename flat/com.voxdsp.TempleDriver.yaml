@@ -1,0 +1,27 @@
+app-id: com.voxdsp.TempleDriver
+runtime: org.freedesktop.Platform
+runtime-version: '23.08'
+sdk: org.freedesktop.Sdk
+command: templedriver
+rename-icon: templedriver
+rename-desktop-file: templedriver.desktop
+rename-appdata-file: templedriver.appdata.xml
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --share=ipc
+  - --device=dri
+modules:
+  - name: templedriver
+    buildsystem: simple
+    build-commands:
+      - cc main.c -I inc -lSDL2 -lGLESv2 -lEGL -Ofast -lm -o templedriver
+      - install -Dm 0755 templedriver -t ${FLATPAK_DEST}/bin
+      - install -Dm 0644 flat/templedriver.desktop ${FLATPAK_DEST}/share/applications/templedriver.desktop
+      - install -Dm 0644 flat/templedriver.appdata.xml ${FLATPAK_DEST}/share/metainfo/templedriver.appdata.xml
+      - install -Dm 0644 flat/templedriver.png ${FLATPAK_DEST}/share/icons/hicolor/128x128/apps/templedriver.png
+    sources:
+      - type: git
+        url: https://github.com/mrbid/TempleDriver.git
+        commit: f300481b04bff205ad5cbe92a1997cba2d3e59ef
