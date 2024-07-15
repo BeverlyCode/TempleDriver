@@ -5,48 +5,47 @@
     It's good to be king. Wait, maybe. I think maybe I'm just like a little bizarre little person who walks back and forth.
 */
 
-#include <math.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <time.h>
+
+#ifdef WEB
+    #include <emscripten.h>
+    #include <emscripten/html5.h>
+#endif
 
 #define AUDIO_ON
 #ifdef AUDIO_ON
-    #include <alsa/asoundlib.h>
-    #include <pthread.h>
-    #include "assets/audio/song.h"
+    #include "assets/song.h"
 #endif
 
 #define uint GLuint
 #define sint GLint
 
-#include "inc/gl.h"
-#define GLFW_INCLUDE_NONE
-#include "inc/glfw3.h"
-#define fTime() (float)glfwGetTime()
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_opengles2.h>
 
-//#define GL_DEBUG
 #define MAX_MODELS 9 // hard limit, be aware and increase if needed
 #include "inc/esAux7.h"
+#include "inc/matvec.h"
 
-#include "inc/res.h"
-
-#include "assets/high/track.h"  //0
-#include "assets/high/bg.h"     //1
-#include "assets/high/car.h"    //2
-#include "assets/high/train.h"  //3
-#include "assets/high/e1.h"     //4
-#include "assets/high/e2.h"     //5
-#include "assets/high/alien.h"  //6
-#include "assets/high/cia.h"    //7
-#include "assets/high/terry.h"  //8
+#include "assets/icon.h"
+#include "assets/track.h"  //0
+#include "assets/bg.h"     //1
+#include "assets/car.h"    //2
+#include "assets/train.h"  //3
+#include "assets/e1.h"     //4
+#include "assets/e2.h"     //5
+#include "assets/alien.h"  //6
+#include "assets/glo.h"    //7
+#include "assets/terry.h"  //8
 
 //*************************************
 // globals
 //*************************************
 const char appTitle[]="Temple Driver";
-GLFWwindow* window;
+SDL_Window* wnd;
+SDL_GLContext glc;
+SDL_Surface* s_icon = NULL;
 uint winw=1024, winh=768;
 float t=0.f, dt=0.f, lt=0.f, fc=0.f, lfct=0.f, aspect;
 
@@ -54,7 +53,7 @@ float t=0.f, dt=0.f, lt=0.f, fc=0.f, lfct=0.f, aspect;
 mat projection, view, model, modelview;
 
 // game vars
-#define FAR_DISTANCE 333.f
+#define FAR_DISTANCE 8.f
 #define ROAD_TILES 5
 uint keystate[2] = {0};
 float rspeed = 1.f;
@@ -66,12 +65,12 @@ float roady[ROAD_TILES];
 float ntrain = 0.f;
 float trainy = 6.7f;
 float trains = 1.f;
-float cial[3];
-float ciar[3];
-uint dcial[3];
-uint dciar[3];
-uint vcial[3];
-uint vciar[3];
+float glol[3];
+float glor[3];
+uint dglol[3];
+uint dglor[3];
+uint vglol[3];
+uint vglor[3];
 uint score = 0;
 uint spawned = 0;
 float ascend = 0.1f;
@@ -82,8 +81,8 @@ void resetGame()
         roady[i] = 1.34f*(float)i;
     for(uint i=0; i < 3; i++)
     {
-        cial[i] = -2.68f;
-        ciar[i] = -2.68f;
+        glol[i] = -2.68f;
+        glor[i] = -2.68f;
     }
     rspeed = 1.f;
     carx = 0.f;
@@ -102,60 +101,51 @@ void resetGame()
 //*************************************
 // utility functions
 //*************************************
-void timestamp(char* ts)
+void timestamp(char* ts){const time_t tt=time(0);strftime(ts,16,"%H:%M:%S",localtime(&tt));}
+float fTime(){return ((float)SDL_GetTicks())*0.001f;}
+SDL_Surface* surfaceFromData(const Uint32* data, Uint32 w, Uint32 h)
 {
-    const time_t tt = time(0);
-    strftime(ts, 16, "%H:%M:%S", localtime(&tt));
+    SDL_Surface* s = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_RGBA32);
+    memcpy(s->pixels, data, s->pitch*h);
+    return s;
 }
 void updateModelView()
 {
     mMul(&modelview, &model, &view);
     glUniformMatrix4fv(modelview_id, 1, GL_FALSE, (float*)&modelview.m[0][0]);
 }
+void updateWindowSize(int width, int height)
+{
+    winw = width, winh = height;
+    glViewport(0, 0, winw, winh);
+    aspect = (float)winw / (float)winh;
+    mIdent(&projection);
+    mPerspective(&projection, 30.0f, aspect, 0.1f, FAR_DISTANCE);
+    glUniformMatrix4fv(projection_id, 1, GL_FALSE, (float*)&projection.m[0][0]);
+}
+#ifdef WEB
+EM_BOOL emscripten_resize_event(int eventType, const EmscriptenUiEvent *uiEvent, void *userData)
+{
+    winw = uiEvent->documentBodyClientWidth;
+    winh = uiEvent->documentBodyClientHeight;
+    updateWindowSize(winw, winh);
+    emscripten_set_canvas_element_size("canvas", winw, winh);
+    return EM_FALSE;
+}
+#endif
 
 //*************************************
-// audio thread
+// audio callback
 //*************************************
 #ifdef AUDIO_ON
-#define AUDIOBUF 1024
-uint raud = 0;
-void *audioThread(void *arg)
+uint saud = 0;
+void audioCallback(void* unused, Uint8* stream, int len)
 {
-    uint si = 0;
-    unsigned int urate = 48000;
-    unsigned char buf[AUDIOBUF];
-    snd_pcm_t *pcm;
-    snd_pcm_hw_params_t *hwp;
-    while(1)
+    for(int i = 0; i < len; i++)
     {
-        snd_pcm_open(&pcm, "default", SND_PCM_STREAM_PLAYBACK, 0);
-        snd_pcm_hw_params_malloc(&hwp);
-        snd_pcm_hw_params_any(pcm, hwp);
-        snd_pcm_hw_params_set_format(pcm, hwp, SND_PCM_FORMAT_U8);
-        snd_pcm_hw_params_set_rate_near(pcm, hwp, &urate, 0);
-        snd_pcm_hw_params_set_channels(pcm, hwp, 1);
-        snd_pcm_hw_params(pcm, hwp);
-        snd_pcm_hw_params_free(hwp);
-        snd_pcm_prepare(pcm);
-        while(1)
-        {
-            if(raud == 1)
-            {
-                si = 288000;
-                raud=0;
-                break;
-            }
-            for(int i = 0; i < AUDIOBUF; i++)
-            {
-                buf[i] = song[si];
-                if(++si >= song_size){si = 0;}
-            }
-            if(snd_pcm_writei(pcm, buf, AUDIOBUF) < 0){break;}
-        }
-        snd_pcm_close(pcm);
+        stream[i] = song[saud];
+        if(++saud >= song_size){saud = 0;}
     }
-
-    return 0;
 }
 #endif
 
@@ -168,7 +158,6 @@ void main_loop()
 // core logic
 //*************************************
     fc++;
-    glfwPollEvents();
     t = fTime();
     dt = t-lt;
     lt = t;
@@ -176,6 +165,105 @@ void main_loop()
 //*************************************
 // game logic
 //*************************************
+
+    SDL_Event event;
+    while(SDL_PollEvent(&event))
+    {
+        switch(event.type)
+        {
+            case SDL_WINDOWEVENT:
+            {
+                switch(event.window.event)
+                {
+                    case SDL_WINDOWEVENT_RESIZED:
+                    {
+                        updateWindowSize(event.window.data1, event.window.data2);
+                    }
+                    break;
+                }
+            }
+            break;
+
+            case SDL_FINGERDOWN:
+            {
+                if(ascend > 1.0f){resetGame();break;}
+                keystate[0]=0, keystate[1]=0;
+                keystate[(event.tfinger.x>0.5f)]=1;
+            }
+            break;
+
+            case SDL_FINGERMOTION:
+            {
+                keystate[0]=0, keystate[1]=0;
+                keystate[(event.tfinger.x>0.5f)]=1;
+            }
+            break;
+
+            case SDL_FINGERUP:
+            {
+                keystate[0]=0, keystate[1]=0;
+            }
+            break;
+
+            case SDL_KEYDOWN:
+            {
+                if(ascend > 1.0f){resetGame();break;}
+                if(keystate[0] == 0 && keystate[1] == 0)
+                {
+                    if(event.key.keysym.sym      == SDLK_LEFT)  { keystate[0] = 1; }
+                    else if(event.key.keysym.sym == SDLK_RIGHT) { keystate[1] = 1; }
+                }
+            }
+            break;
+
+            case SDL_KEYUP:
+            {
+                if(event.key.keysym.sym      == SDLK_LEFT)  { keystate[0] = 0; }
+                else if(event.key.keysym.sym == SDLK_RIGHT) { keystate[1] = 0; }
+                else if(event.key.keysym.sym == SDLK_f)
+                {
+                    if(t-lfct > 2.0)
+                    {
+                        char strts[16];
+                        timestamp(&strts[0]);
+                        printf("[%s] FPS: %g\n", strts, fc/(t-lfct));
+                        lfct = t;
+                        fc = 0;
+                    }
+                }
+            }
+            break;
+
+            case SDL_MOUSEBUTTONDOWN:
+            {
+                if(ascend > 1.0f){resetGame();break;}
+                if(keystate[0] == 0 && keystate[1] == 0)
+                {
+                    if(event.button.button      == SDL_BUTTON_LEFT) { keystate[0] = 1; }
+                    else if(event.button.button == SDL_BUTTON_RIGHT){ keystate[1] = 1; }
+                }
+            }
+            break;
+
+            case SDL_MOUSEBUTTONUP:
+            {
+                if(ascend > 1.0f){resetGame();break;}
+                if(event.button.button      == SDL_BUTTON_LEFT) { keystate[0] = 0; }
+                else if(event.button.button == SDL_BUTTON_RIGHT){ keystate[1] = 0; }
+            }
+            break;
+
+            case SDL_QUIT:
+            {
+                SDL_FreeSurface(s_icon);
+                SDL_GL_DeleteContext(glc);
+                SDL_DestroyWindow(wnd);
+                SDL_Quit();
+                exit(0);
+            }
+            break;
+        }
+    }
 
     // if car is not dead
     static float nbt = 0.f;
@@ -211,23 +299,23 @@ void main_loop()
             if(roady[i] < -2.68f){roady[i] += 1.34f*ROAD_TILES;}
         }
 
-        // spawn cia
+        // spawn glo
         static float ns = 0.f;
         if(t > ns)
         {
             for(uint i=0; i < 3; i++)
             {
-                if(cial[i] <= -2.68f)
+                if(glol[i] <= -2.68f)
                 {
-                    cial[i] = 6.7f;
-                    dcial[i] = 0;
+                    glol[i] = 6.7f;
+                    dglol[i] = 0;
                     spawned++;
                     break;
                 }
-                else if(ciar[i] <= -2.68f)
+                else if(glor[i] <= -2.68f)
                 {
-                    ciar[i] = 6.7f;
-                    dciar[i] = 0;
+                    glor[i] = 6.7f;
+                    dglor[i] = 0;
                     spawned++;
                     break;
                 }
@@ -235,14 +323,14 @@ void main_loop()
             ns = t+esRandFloat(1.f, 3.f);
         }
 
-        // flip cia
+        // flip glo
         static float nv = 0.f;
         if(t > nv)
         {
             if(randf() > 0.5f)
-                vcial[0] = 1-vcial[0];
+                vglol[0] = 1-vglol[0];
             else
-                vciar[0] = 1-vciar[0];
+                vglor[0] = 1-vglor[0];
             nv = t+esRandFloat(0.1f, 0.3f);
         }
     }
@@ -263,7 +351,7 @@ void main_loop()
     if(fabsf(carx) < 0.2f && fabsf(0.13f - trainy) < 0.420f)
     {
 #ifdef AUDIO_ON
-        if(carr == 0.f){raud = 1;}
+        if(carr == 0.f){saud = 288000;}
 #endif
         carr += 6.f*dt;
     }
@@ -296,17 +384,6 @@ void main_loop()
             updateModelView();
             esBindRender(8);
         }
-        // else
-        // {
-        //     ascend += 0.066f*dt;
-        //     glEnable(GL_BLEND);
-        //     glUniform1f(opacity_id, 1.f-((ascend-0.5f)*2.f));
-        //     mIdent(&model);
-        //     mSetPos(&model, (vec){0.f, 0.f, 0.5f});
-        //     updateModelView();
-        //     esBindRender(10);
-        //     glDisable(GL_BLEND);
-        // }
     }
     else
     {
@@ -316,20 +393,20 @@ void main_loop()
         esBindRender(3);
     }
 
-    // CIA
+    // glo
     if(carr == 0.f)
     {
         for(uint i=0; i < 3; i++)
         {
-            if(cial[i] > -2.68f)
+            if(glol[i] > -2.68f)
             {
-                cial[i] -= rspeed*dt;
+                glol[i] -= rspeed*dt;
                 mIdent(&model);
-                mSetPos(&model, (vec){-0.35f, cial[i], 0.f});
-                if(dcial[i] == 1){mRotY(&model, 90.f*DEG2RAD);}
-                else if(dcial[i] == 0 && carx <= -0.2f && cial[i] > -0.5f && cial[i] < 0.132f)
+                mSetPos(&model, (vec){-0.35f, glol[i], 0.f});
+                if(dglol[i] == 1){mRotY(&model, 90.f*DEG2RAD);}
+                else if(dglol[i] == 0 && carx <= -0.2f && glol[i] > -0.5f && glol[i] < 0.132f)
                 {
-                    if(vcial[i] == 1)
+                    if(vglol[i] == 1)
                     {
                         if(carxt < 0.35f){carxt += 0.35f;}
                     }
@@ -338,29 +415,29 @@ void main_loop()
                         rspeed += 0.03f;
                         carz = 0.01f;
                         nbt = t+0.22f;
-                        dcial[i] = 1;
+                        dglol[i] = 1;
                         score++;
                         printf("SCORE: %u/%u\n", score, spawned);
                         char tmp[256];
                         sprintf(tmp, "Temple 👽 %u 👽 Driver", score);
-                        glfwSetWindowTitle(window, tmp);
+                        SDL_SetWindowTitle(wnd, tmp);
                     }
                 }
                 updateModelView();
-                if(vcial[i] == 0)
+                if(vglol[i] == 0)
                     esBindRender(6);
                 else
                     esBindRender(7);
             }
-            if(ciar[i] > -2.68f)
+            if(glor[i] > -2.68f)
             {
-                ciar[i] -= rspeed*dt;
+                glor[i] -= rspeed*dt;
                 mIdent(&model);
-                mSetPos(&model, (vec){0.35f, ciar[i], 0.f});
-                if(dciar[i] == 1){mRotY(&model, 90.f*DEG2RAD);}
-                else if(dciar[i] == 0 && carx >= 0.2f && ciar[i] > -0.5f && ciar[i] < 0.132f)
+                mSetPos(&model, (vec){0.35f, glor[i], 0.f});
+                if(dglor[i] == 1){mRotY(&model, 90.f*DEG2RAD);}
+                else if(dglor[i] == 0 && carx >= 0.2f && glor[i] > -0.5f && glor[i] < 0.132f)
                 {
-                    if(vciar[i] == 1)
+                    if(vglor[i] == 1)
                     {
                         if(carxt > -0.35f){carxt -= 0.35f;}
                     }
@@ -369,16 +446,16 @@ void main_loop()
                         rspeed += 0.03f;
                         carz = 0.01f;
                         nbt = t+0.22f;
-                        dciar[i] = 1;
+                        dglor[i] = 1;
                         score++;
                         printf("SCORE: %u/%u\n", score, spawned);
                         char tmp[256];
                         sprintf(tmp, "Temple 👽 %u 👽 Driver", score);
-                        glfwSetWindowTitle(window, tmp);
+                        SDL_SetWindowTitle(wnd, tmp);
                     }
                 }
                 updateModelView();
-                if(vciar[i] == 0)
+                if(vglor[i] == 0)
                     esBindRender(6);
                 else
                     esBindRender(7);
@@ -409,7 +486,7 @@ void main_loop()
         mIdent(&model);
         mSetPos(&model, (vec){0.f, roady[i], 0.f});
         updateModelView();
-        esRenderModel(0);
+        esRenderModel();
     }
 
     // bg
@@ -418,7 +495,7 @@ void main_loop()
     mIdent(&model);
     mSetPos(&model, (vec){0.f, 4.2f, 0.f});
     updateModelView();
-    esRenderModel(1);
+    esRenderModel();
 
     glEnable(GL_BLEND);
 
@@ -427,21 +504,21 @@ void main_loop()
         mRotY(&model, sin(t)*0.2f);
         mSetPos(&model, (vec){0.f, 3.5f, 0.f});
         updateModelView();
-        esRenderModel(1);
+        esRenderModel();
 
         glUniform1f(opacity_id, 0.5f);
         mIdent(&model);
         mRotX(&model, sin(t*0.5f)*0.3f);
         mSetPos(&model, (vec){0.f, 3.0f, 0.f});
         updateModelView();
-        esRenderModel(1);
+        esRenderModel();
 
         glUniform1f(opacity_id, 0.25f);
         mIdent(&model);
         mRotX(&model, -sin(t*0.5f)*0.3f);
         mSetPos(&model, (vec){0.f, 2.5f, 0.f});
         updateModelView();
-        esRenderModel(1);
+        esRenderModel();
 
         if(ascend >= 0.5f)
         {
@@ -456,59 +533,7 @@ void main_loop()
     glDisable(GL_BLEND);
 
     // display render
-    glfwSwapBuffers(window);
-}
-
-//*************************************
-// input
-//*************************************
-void mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
-{
-    if(ascend > 1.0f){resetGame();return;}
-    if(action == GLFW_PRESS && keystate[0] == 0 && keystate[1] == 0)
-    {
-        if(button == GLFW_MOUSE_BUTTON_LEFT){keystate[0] = 1;}
-        else if(button == GLFW_MOUSE_BUTTON_RIGHT){keystate[1] = 1;}
-    }
-    else if(action == GLFW_RELEASE)
-    {
-        if(button == GLFW_MOUSE_BUTTON_LEFT){keystate[0] = 0;}
-        else if(button == GLFW_MOUSE_BUTTON_RIGHT){keystate[1] = 0;}
-    }
-}
-void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
-{
-    if(ascend > 1.0f){resetGame();return;}
-    if(action == GLFW_PRESS && keystate[0] == 0 && keystate[1] == 0)
-    {
-        if(     key == GLFW_KEY_LEFT)  { keystate[0] = 1; }
-        else if(key == GLFW_KEY_RIGHT) { keystate[1] = 1; }
-        else if(key == GLFW_KEY_F) // show average fps
-        {
-            if(t-lfct > 2.0)
-            {
-                char strts[16];
-                timestamp(&strts[0]);
-                printf("[%s] FPS: %g\n", strts, fc/(t-lfct));
-                lfct = t;
-                fc = 0;
-            }
-        }
-    }
-    else if(action == GLFW_RELEASE)
-    {
-        if(     key == GLFW_KEY_LEFT)  { keystate[0] = 0; }
-        else if(key == GLFW_KEY_RIGHT) { keystate[1] = 0; }
-    }
-}
-void window_size_callback(GLFWwindow* window, int width, int height)
-{
-    winw = width, winh = height;
-    glViewport(0, 0, winw, winh);
-    aspect = (float)winw / (float)winh;
-    mIdent(&projection);
-    mPerspective(&projection, 30.0f, aspect, 0.1f, FAR_DISTANCE);
-    glUniformMatrix4fv(projection_id, 1, GL_FALSE, (float*)&projection.m[0][0]);
+    SDL_GL_SwapWindow(wnd);
 }
 
 //*************************************
@@ -525,8 +550,6 @@ int main(int argc, char** argv)
     printf("James William Fletcher (github.com/mrbid)\n");
     printf("%s - It's good to be king. Wait, maybe. I think maybe I'm just like a little bizarre little person who walks back and forth.\n", appTitle);
     printf("----\n");
-    printf("The CIA glow in the dark you can see 'em if you're driving, you just run them over that's what you do.\n");
-    printf("----\n");
     printf("Terry's 1st Temple.\n");
     printf("----\n");
     printf("Terry was living in his Dodge Caravan travelling around the USA at the time of his ascension to the throne, his last known mortal location was: W 1st St, The Dalles, Oregon. By the Tjunction of Bargeway Rd.\n");
@@ -537,7 +560,7 @@ int main(int argc, char** argv)
     printf("----\n");
     printf("Left & Right Click / Arrow Keys = Move\n");
     printf("----\n");
-    printf("All assets where generated using LUMA GENIE (https://lumalabs.ai/genie) & TripoAI (https://www.tripo3d.ai).\n");
+    printf("All assets generated using LUMA GENIE (https://lumalabs.ai/genie) & TripoAI (https://www.tripo3d.ai).\n");
     printf("----\n");
     printf("Music: TempleOS Hymn Risen (Remix) - Dave Eddy\n");
     printf("https://soundcloud.com/daveeddy/templeosremix\n");
@@ -545,41 +568,70 @@ int main(int argc, char** argv)
     printf("----\n");
     printf("Dedicated to the smartest programmer that ever lived, Terry A. Davis. (https://templeos.org/)\n");
     printf("----\n");
-    printf("%s\n", glfwGetVersionString());
+    printf("Terry A. Davis was a very skilled and devote catholic programmer who sadly suffered from Schizophrenia during his life, although this didn't stop Terry from becoming one of the most famous and recognisable figures of the general internet community gaining recognition from even Larry Page the co-founder of the Google search engine. What Terry managed to achieve is his life is sadly commonly undervalued and overlooked due to his Schizophrenia; however what Terry managed to achieve in his programming ventures and his soglol media escapades, a small fragment of which considered controversial sadly given more attention than the greater body of his internet streams, truly is a remarkable feat even for an individual without mental health issues. That is to say that no one else to date has achieved the combined programming feats and soglol notoriety that Terry Davis, single-handedly, managed to achieve during his life. It is with great honour that I am able to write this passage about him.\n");
+    printf("----\n");
+    SDL_version compiled;
+    SDL_version linked;
+    SDL_VERSION(&compiled);
+    SDL_GetVersion(&linked);
+    printf("Compiled against SDL version %u.%u.%u.\n", compiled.major, compiled.minor, compiled.patch);
+    printf("Linked against SDL version %u.%u.%u.\n", linked.major, linked.minor, linked.patch);
     printf("----\n");
 
-    // init glfw
-    if(!glfwInit()){printf("glfwInit() failed.\n"); exit(EXIT_FAILURE);}
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-    glfwWindowHint(GLFW_SAMPLES, msaa);
-    window = glfwCreateWindow(winw, winh, appTitle, NULL, NULL);
-    if(!window)
+    // init sdl
+    if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO|SDL_INIT_EVENTS) < 0)
     {
-        printf("glfwCreateWindow() failed.\n");
-        glfwTerminate();
-        exit(EXIT_FAILURE);
+        printf("ERROR: SDL_Init(): %s\n", SDL_GetError());
+        return 1;
     }
-    const GLFWvidmode* desktop = glfwGetVideoMode(glfwGetPrimaryMonitor());
-    glfwSetWindowPos(window, (desktop->width/2)-(winw/2), (desktop->height/2)-(winh/2)); // center window on desktop
-    glfwSetWindowSizeCallback(window, window_size_callback);
-    glfwSetMouseButtonCallback(window, mouse_button_callback);
-    glfwSetKeyCallback(window, key_callback);
-    glfwMakeContextCurrent(window);
-    gladLoadGL(glfwGetProcAddress);
-    glfwSwapInterval(1); // 0 for immediate updates, 1 for updates synchronized with the vertical retrace, -1 for adaptive vsync
+#ifdef WEB
+    double width, height;
+    emscripten_get_element_css_size("body", &width, &height);
+    winw = (Uint32)width, winh = (Uint32)height;
+#endif
+    if(msaa > 0)
+    {
+        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
+        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, msaa);
+    }
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    wnd = SDL_CreateWindow(appTitle, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, winw, winh, SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN);
+    while(wnd == NULL)
+    {
+        msaa--;
+        if(msaa == 0)
+        {
+            printf("ERROR: SDL_CreateWindow(): %s\n", SDL_GetError());
+            return 1;
+        }
+        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, msaa);
+        wnd = SDL_CreateWindow(appTitle, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, winw, winh, SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN);
+    }
+    SDL_GL_SetSwapInterval(1); // 0 for immediate updates, 1 for updates synchronized with the vertical retrace, -1 for adaptive vsync
+    glc = SDL_GL_CreateContext(wnd);
+    if(glc == NULL)
+    {
+        printf("ERROR: SDL_GL_CreateContext(): %s\n", SDL_GetError());
+        return 1;
+    }
 
     // set icon
-    glfwSetWindowIcon(window, 1, &(GLFWimage){16, 16, (unsigned char*)icon_image});
+    s_icon = surfaceFromData((Uint32*)&icon_image, 16, 16);
+    SDL_SetWindowIcon(wnd, s_icon);
 
 #ifdef AUDIO_ON
-    // create audio thread
-    pthread_t tid;
-    if(pthread_create(&tid, NULL, audioThread, NULL) != 0)
-    {
-        printf("pthread_create(audioThread) failed.\n");
-        return 0;
-    }
+    // open audio device
+    SDL_AudioSpec sdlaudioformat;
+    sdlaudioformat.freq = song_freq;
+    sdlaudioformat.format = AUDIO_U8;
+    sdlaudioformat.channels = 1;
+    sdlaudioformat.samples = 1024;
+    sdlaudioformat.callback = audioCallback;
+    sdlaudioformat.userdata = NULL;
+    SDL_OpenAudio(&sdlaudioformat, 0);
+    SDL_PauseAudio(0);
 #endif
 
 //*************************************
@@ -592,7 +644,7 @@ int main(int argc, char** argv)
     register_e1();
     register_e2();
     register_alien();
-    register_cia();
+    register_glo();
     register_terry();
 
 //*************************************
@@ -609,13 +661,9 @@ int main(int argc, char** argv)
 
     shadeLambert(&position_id, &projection_id, &modelview_id, &lightpos_id, &normal_id, &color_id, &ambient_id, &saturate_id, &opacity_id);
     glUniformMatrix4fv(projection_id, 1, GL_FALSE, (float*)&projection.m[0][0]);
-    window_size_callback(window, winw, winh);
+    updateWindowSize(winw, winh);
     glUniform1f(ambient_id, 0.648f);
     glUniform1f(saturate_id, 1.f);
-
-#ifdef GL_DEBUG
-    esDebug(1);
-#endif
 
 //*************************************
 // execute update / render loop
@@ -631,11 +679,13 @@ int main(int argc, char** argv)
     resetGame();
 
     // loop
-    while(!glfwWindowShouldClose(window)){main_loop();}
+#ifdef WEB
+    emscripten_set_resize_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, NULL, EM_FALSE, emscripten_resize_event);
+    emscripten_set_main_loop(main_loop, 0, 1);
+#else
+    while(1){main_loop();}
+#endif
 
     // done
-    glfwDestroyWindow(window);
-    glfwTerminate();
-    exit(EXIT_SUCCESS);
     return 0;
 }
