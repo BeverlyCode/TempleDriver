@@ -351,7 +351,7 @@ void main_loop()
     if(fabsf(carx) < 0.2f && fabsf(0.13f - trainy) < 0.420f)
     {
 #ifdef AUDIO_ON
-        if(carr == 0.f){saud = 288000;}
+        if(carr == 0.f){saud = 0;}
 #endif
         carr += 6.f*dt;
     }
